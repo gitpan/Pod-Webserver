@@ -3,7 +3,7 @@ require 5;
 package Pod::Webserver;
 use strict;
 use vars qw( $VERSION @ISA );
-$VERSION = '3.02';
+$VERSION = '3.03';
 
 BEGIN {
   if(defined &DEBUG) { } # no-op
@@ -379,7 +379,7 @@ __END__
 
 Pod::Webserver -- minimal web server to serve local Perl documentation
 
-=head1 synopsis
+=head1 SYNOPSIS
 
   % podwebserver
   You can now point your browser at http://localhost:8020/
@@ -391,6 +391,80 @@ minimal web server to serve local Perl documentation.  It's like
 L<perldoc> except it works through your browser.
 
 Run F<podwebserver -h> for a list of runtime options.
+
+
+
+
+=head1 SECURITY (AND @INC)
+
+Pod::Webserver is not what you'd call a gaping security hole --
+after all, all it does and could possibly do is serve HTML
+version of anything you could get by typing "perldoc
+SomeModuleName".  Pod::Webserver won't serve files at
+arbitrary paths or anything.
+
+But do consider whether you're revealing anything by 
+basically showing off what versions of modules you've got
+installed; and also consider whether you could be revealing
+any proprietary or in-house modules' documentation.
+
+And also consider that this exposes the documentation
+of modules (i.e., any Perl files that at all look like
+modules) in your @INC dirs -- and your @INC probably
+contains "."!  If your current working directory could
+contain modules I<whose Pod> you don't
+want anyone to see, then you could do two things:
+The cheap and easy way is to just chdir to an
+uninteresting directory:
+
+  mkdir ~/.empty; cd ~/.empty; podwebserver
+
+The more careful approach is to run podwebserver
+under perl in -T (taint) mode (as explained in
+L<perlsec>), and to explicitly specify what extra
+directories you want in @INC, like so:
+
+  perl -T -Isomepath -Imaybesomeotherpath -S podwebserver
+
+You can also use this -I (that's a capital igh, not a
+lowercase ell) trick to add dirs to @INC even
+if you're not using -T.  For example:
+
+  perl -I/that/thar/Module-Stuff-0.12/lib -S podwebserver
+
+An alternate approach is to use your shell's
+environment-setting commands to alter PERL5LIB or
+PERLLIB before starting podwebserver.
+
+These -T and -I switches are explained in L<perlrun>. But I'll note in
+passing that you'll likely need to do this to get your PERLLIB
+environment variable to be in @INC...
+
+  perl -T -I$PERLLIB -S podwebserver
+
+(Or replacing that with PERL5LIB, if that's what you use.)
+
+
+=head2 ON INDEXING '.' IN @INC
+
+Pod::Webserver uses the module Pod::Simple::Search to build the index
+page you see at http://yourservername:8020/ (or whatever port you
+choose instead of 8020). That module's indexer has one notable DWIM
+feature: it reads over @INC, except that it skips the "." in @INC.  But
+you can work around this by expressing the current directory in some
+other way than as just the single literal period -- either as some
+more roundabout way, like so:
+
+  perl -I./. -S podwebserver
+
+Or by just expressing the current directory absolutely:
+
+  perl -I`pwd` -S podwebserver
+
+Note that even when "." isn't indexed, the Pod in files under it are
+still accessible -- just as if you'd typed "perldoc whatever" and got
+the Pod in F<./whatever.pl>
+
 
 
 =head1 SEE ALSO
