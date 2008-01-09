@@ -1,10 +1,12 @@
-# http://module-build.sourceforge.net/META-spec.html
-#XXXXXXX This is a prototype!!!  It will change in the future!!! XXXXX#
-name:         Pod-Webserver
-version:      3.04
-version_from: lib/Pod/Webserver.pm
-installdirs:  site
-requires:
+--- #YAML:1.0
+name:                Pod-Webserver
+version:             3.05
+abstract:            a miniature web server for reading Pod in web browsers
+license:             ~
+author:              ~
+generated_by:        ExtUtils::MakeMaker version 6.42
+distribution_type:   module
+requires:     
     Carp:                          0
     File::Spec::Unix:              0
     IO::Socket:                    0
@@ -14,6 +16,6 @@ requires:
     Pod::Simple::Progress:         0
     strict:                        0
     vars:                          0
-
-distribution_type: module
-generated_by: ExtUtils::MakeMaker version 6.17
+meta-spec:
+    url:     http://module-build.sourceforge.net/META-spec-v1.3.html
+    version: 1.3
