@@ -1,11 +1,15 @@
-ChangeLog
+bin/podwebserver
+Build.PL
+Changelog.ini
+Changes
 lib/Pod/Webserver.pm
 Makefile.PL
 MANIFEST
-MANIFEST.SKIP
-podwebserver
+META.json
+META.yml			Module meta-data (added by MakeMaker)
 README
-t/01_about_verbose.t
-t/02_pod_webserver.t
-t/03_daemon.t
-META.yml                                 Module meta-data (added by MakeMaker)
+t/about_verbose.t
+t/daemon.t
+t/pod_webserver.t
+t/version.t
+xt/author/pod.t

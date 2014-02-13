@@ -1,9 +1,9 @@
-
-require 5;
 package Pod::Webserver;
+
 use strict;
 use vars qw( $VERSION @ISA );
-$VERSION = '3.05';
+
+our $VERSION = '3.06';
 
 BEGIN {
   if(defined &DEBUG) { } # no-op
@@ -18,16 +18,18 @@ BEGIN {
 use Pod::Simple::HTMLBatch;
 use Pod::Simple::TiedOutFH;
 use Pod::Simple;
-use Carp ();
 use IO::Socket;
+use File::Spec;
 use File::Spec::Unix ();
 @ISA = ('Pod::Simple::HTMLBatch');
 
 __PACKAGE__->Pod::Simple::_accessorize(
- 'httpd_port',
- 'httpd_host',
- 'httpd_timeout',
- 'skip_indexing',
+	'dir_include',
+	'dir_exclude',
+	'httpd_port',
+	'httpd_host',
+	'httpd_timeout',
+	'skip_indexing',
 );
 
 httpd() unless caller;
@@ -41,6 +43,7 @@ sub httpd {
   $self = $self->new unless ref $self;
   $self->{'_batch_start_time'} = time();
   $self->_get_options;
+  $self->_init_options;
 
   $self->contents_file('/');
   $self->prep_for_daemon;
@@ -62,34 +65,53 @@ sub _get_options {
   return unless @ARGV;
   require Getopt::Std;
   my %o;
-  die "Aborting" unless
 
-  Getopt::Std::getopts( "p: H:  q v  h V" => \%o ) || die "Aborting\n";
-  
-  # The three switches that shortcut the run:
+  Getopt::Std::getopts( "d:e:H:hp:qt:Vv" => \%o ) || die "Failed to parse options\n";
+
+  # The 2 switches that shortcut the run:
   $o{'h'} and exit( $self->_arg_h || 0);
   $o{'V'} and exit( $self->_arg_V || 0);
 
-  $self->verbose(4) if $o{'v'};
+  $self->_arg_h, exit(0) if ($o{p} and ($o{p} !~ /^\d+$/) );
+  $self->_arg_h, exit(0) if ($o{t} and ($o{t} !~ /^\d+$/) );
 
-  $self->skip_indexing(1) if $o{'q'};
-  $self->httpd_host( $o{'H'} ) if $o{'H'};
-  $self->httpd_port( $o{'p'} ) if $o{'p'};
+  $self->dir_exclude( [ map File::Spec->canonpath($_), split(/:|;/, $o{'e'}) ] ) if ($o{'e'});
+  $self->dir_include( [ map File::Spec->canonpath($_), split(/:|;/, $o{'d'}) ] ) if ($o{'d'});
+
+  $self->httpd_host( $o{'H'} )		if $o{'H'};
+  $self->httpd_port( $o{'p'} )		if $o{'p'};
+  $self->httpd_timeout( $o{'t'} )	if $o{'t'};
+
+  $self->skip_indexing(1)			if $o{'q'};
+  $self->verbose(4)					if $o{'v'};
+
   return;
 }
+
+sub _init_options
+{
+  my($self) = shift;
+
+  $self->dir_exclude([]);
+  $self->dir_include([@INC]);
+
+} # End of _init_options.
 
 sub _arg_h {
   my $class = ref($_[0]) || $_[0];
   $_[0]->_arg_V;
   print join "\n",
     "Usage:",
-    "  podwebserver                   = start podwebserver on localhost:8020",
-    "  podwebserver -p 1234           = start podwebserver on localhost:1234",
-    "  podwebserver -p 1234 -H blorp  = start podwebserver on blorp:1234",
-    "  podwebserver -q                = quick startup (but no Table of Contents)",
-    "  podwebserver -v                = run with verbose output to STDOUT",
-    "  podwebserver -h                = see this message",
-    "  podwebserver -V                = show version information",
+    "  podwebserver                   = Start podwebserver on localhost:8020. Search \@INC",
+    "  podwebserver -p 1234           = Start podwebserver on localhost:1234",
+    "  podwebserver -p 1234 -H blorp  = Start podwebserver on blorp:1234",
+    "  podwebserver -t 3600           = Auto-exit in 1 hour. Default => 18000 (5 hours). 0 => No timeout",
+	"  podwebserver -d /path/to/lib   = Ignore \@INC, and only search within /path/to/lib",
+	"  podwebserver -e /path/to/skip  = Exclude /path/to/skip files",
+    "  podwebserver -q                = Quick startup (but no Table of Contents)",
+    "  podwebserver -v                = Run with verbose output to STDOUT",
+    "  podwebserver -h                = See this message",
+    "  podwebserver -V                = Show version information",
     "\nRun 'perldoc $class' for more information.",
   "";
   return;
@@ -111,7 +133,7 @@ sub _arg_V {
     if defined(&Win32::BuildNumber) and defined &Win32::BuildNumber();
   print " MacPerl verison $MacPerl::Version\n"
     if defined $MacPerl::Version;
-  return;  
+  return;
 }
 
 #==========================================================================
@@ -122,7 +144,7 @@ sub _serve_pod {
     $self->muse( "But filename $filename is no good!" );
     return;
   }
-  
+
   my $modtime = (stat(_))[9];  # use my own modtime whynot!
   $resp->content('');
   my $contr = $resp->content_ref;
@@ -149,23 +171,32 @@ sub _serve_pod {
     $self->muse( "Ugh, couldn't convert $modname"  );
   }
 
-  return $retval;  
+  return $retval;
 }
 
 #==========================================================================
-
 sub new_daemon {
   my $self = shift;
-  my @opts = (
-      defined($self->httpd_host) ?
-             (LocalHost => $self->httpd_host) : (),
-              LocalPort => $self->httpd_port || 8020,
-              Timeout   =>
-               defined($self->httpd_timeout) ?
-                       $self->httpd_timeout : (5*3600), # exit after 5H idle
-  );
+
+  my @opts;
+
+  push @opts, LocalHost => $self->httpd_host if (defined $self->httpd_host);
+  push @opts, LocalPort => $self->httpd_port || 8020;
+
+  if (defined $self->httpd_timeout)
+  {
+	if ($self->httpd_timeout > 0)
+	{
+	  push @opts, Timeout => $self->httpd_timeout;
+	}
+  }
+  else
+  {
+	push @opts, Timeout => 5 * 3600; # Default to exit after 5 hours of idle time.
+  }
+
   $self->muse( "Starting daemon with options {@opts}" );
-  Pod::Webserver::Daemon->new(@opts) || die "Can't start a daemon: $!\nAborting";
+  Pod::Webserver::Daemon->new(@opts) || die "Can't start a daemon: $!\n";
 }
 
 #==========================================================================
@@ -184,8 +215,8 @@ sub prep_for_daemon {
     "Disallow: /",
     "", "", "# I am " . __PACKAGE__ . " v$VERSION", "", "",
   );
-  
-  $self->add_to_fs( '/', 'text/html', 
+
+  $self->add_to_fs( '/', 'text/html',
    # We get this only when we start up in -q mode:
    "* Perl Pod server *\n<p>Example URL: http://whatever/Getopt/Std\n\n"
   );
@@ -204,9 +235,9 @@ sub prep_for_daemon {
 
 sub prep_lookup_table {
   my $self = shift;
-    
+
   my $m2p;
-  
+
   if( $self->skip_indexing ) {
     $self->muse("Skipping \@INC indexing.");
   } else {
@@ -219,16 +250,29 @@ sub prep_lookup_table {
     }
 
     my $search = $Pod::Simple::HTMLBatch::SEARCH_CLASS->new;
+	my $dir_include = $self->dir_include;
     if(DEBUG > -1) {
-      print " Indexing all of \@INC -- this might take a minute.\n", 
-        "\@INC = [ @INC ]\n";
+		if ($#{$self->dir_include} >= 0) {
+			print " Indexing all of @$dir_include -- this might take a minute.\n";
+		}
+		else {
+			print " Indexing all of \@INC -- this might take a minute.\n";
+			DEBUG > 1 and print "\@INC = [ @INC ]\n";
+		}
       $self->{'httpd_has_noted_inc_already'} ++;
     }
-    $m2p = $self->modnames2paths();
+	$m2p = $self->modnames2paths($dir_include ? $dir_include : undef);
     $self->progress(0);
-    
-    die "What, no name2path?!" unless $m2p and keys %$m2p;
-    DEBUG > -1 and print " Done scanning \@INC\n";
+
+	# Filter out excluded folders
+	while ( my ($key, $value) = each %$m2p ) {
+		DEBUG > 1 and print "-e $value, ",  (grep $value =~ /^\Q$_\E/, @{ $self->dir_exclude }), "\n";
+		delete $m2p->{$key} if grep $value =~ /^\Q$_\E/, @{ $self->dir_exclude };
+	}
+
+    die "Missing path\n" unless $m2p and keys %$m2p;
+
+	DEBUG > -1 and print " Done scanning \n";
 
     foreach my $modname (sort keys %$m2p) {
       my @namelets = split '::', $modname;
@@ -237,22 +281,26 @@ sub prep_lookup_table {
     $self->write_contents_file('crunkBase');
   }
   $self->{'__modname2path'} = $m2p || {};
+
   return;
-}
+
+} # End of prep_lookup_table.
 
 sub write_contents_file {
   my $self = shift;
   $Pod::Simple::HTMLBatch::HTML_EXTENSION
      = $Pod::Simple::HTML::HTML_EXTENSION = '';
+
   return $self->SUPER::write_contents_file(@_);
-}
+
+} # End of write_contents_file.
 
 #==========================================================================
 
 sub add_to_fs {  # add an item to my virtual in-memory filesystem
   my($self,$file,$type,$content) = @_;
 
-  Carp::croak "What filespec?" unless defined $file and length $file;
+  die "Missing filespec\n" unless defined $file and length $file;
   $file = "/$file";
   $file =~ s{/+}{/}s;
   $type ||=
@@ -311,12 +359,12 @@ sub _serve_thing {
 
   my $path = $req->url;
   $path .= substr( ($ENV{PATH} ||''), 0, 0);  # to force-taint it.
-  
+
   my $fs   = $self->{'__daemon_fs'};
   my $pods = $self->{'__modname2path'};
   my $resp = Pod::Webserver::Response->new(200);
   $resp->content_type( $fs->{"\e$path"} || 'text/html' );
-  
+
   $path =~ s{:+}{/}g;
   my $modname = $path;
   $modname =~ s{/+}{::}g;   $modname =~ s{^:+}{};
@@ -327,7 +375,7 @@ sub _serve_thing {
     $modname = '';
   }
   DEBUG > 1 and print "Modname $modname ($path)\n";
-  
+
   if( $fs->{$path} ) {   # Is it in our mini-filesystem?
     $resp->content( $fs->{$path} );
     $resp->header( 'Last-Modified' => $self->{  '__start_as_http_date'} );
@@ -335,18 +383,18 @@ sub _serve_thing {
     $self->muse("Serving pre-cooked $path");
   } elsif( $modname eq '' ) {
     $resp = '';
-  
+
   # After here, it's only untainted module names
   } elsif( $pods->{$modname} ) {   # Is it known pod?
     #$self->muse("I know $modname as ", $pods->{$modname});
     $self->_serve_pod( $modname, $pods->{$modname}, $resp )  or  $resp = '';
-    
+
   } else {
     # If it's not known, look for it.
-    #  This is necessary for indexless mode, and also useful just incase
+    #  This is necessary for indexless mode, and also useful just in case
     #  the user has just installed a new module (after the index was generated)
     my $fspath = $Pod::Simple::HTMLBatch::SEARCH_CLASS->new->find($modname);
-    
+
     if( defined($fspath) ) {
       #$self->muse("Found $modname as $fspath");
       $self->_serve_pod( $modname, $fspath, $resp );
@@ -358,8 +406,8 @@ sub _serve_thing {
       }
     }
   }
-  
-  
+
+
   $resp ? $conn->send_response( $resp ) : $conn->send_error(404);
 
   return;
@@ -408,14 +456,13 @@ sub header {
 # The real method is a setter/getter. We only need the getter.
 sub content_ref {
   my $self = shift;
-  \$self->{content};
+  return \$self->{content};
 }
 
 #==========================================================================
 
 package Pod::Webserver::Daemon;
-use vars qw( $VERSION );
-$VERSION = '3.05';
+our $VERSION = '3.06';
 use Socket qw(PF_INET SOCK_STREAM SOMAXCONN inet_aton sockaddr_in);
 
 sub new {
@@ -426,14 +473,14 @@ sub new {
   # Anonymous file handles the 5.004 way:
   my $sock = do {local *SOCK; \*SOCK};
 
-  my $proto = getprotobyname('tcp') or die "getprotobyname: $!";
-  socket($sock, PF_INET, SOCK_STREAM, $proto) or die "Can't create socket: $!";
+  my $proto = getprotobyname('tcp') or die "Error in getprotobyname: $!\n";
+  socket($sock, PF_INET, SOCK_STREAM, $proto) or die "Can't create socket: $!\n";
   my $host = inet_aton($self->{LocalHost})
-    or die "Can't resolve hostname '$self->{LocalHost}'";
+    or die "Can't resolve hostname '$self->{LocalHost}'\n";
   my $sin = sockaddr_in($self->{LocalPort}, $host);
   bind $sock, $sin
-    or die "Couldn't bind to $self->{LocalHost}:$self->{LocalPort}: $!";
-  listen $sock, SOMAXCONN or die "Couldn't listen: $!";
+    or die "Couldn't bind to $self->{LocalHost}:$self->{LocalPort}: $!\n";
+  listen $sock, SOMAXCONN or die "Couldn't listen on socket: $!\n";
 
   $self->{__sock} = $sock;
 
@@ -462,7 +509,7 @@ sub accept {
 
       my $got = do {local *GOT; \*GOT};
       #$! = "";
-      accept $got, $sock or die "accept failed: $!";
+      accept $got, $sock or die "Error: accept failed: $!\n";
       return Pod::Webserver::Connection->new($got);
     }
   } while (time < $end);
@@ -555,12 +602,13 @@ __END__
 
 =head1 NAME
 
-Pod::Webserver -- minimal web server to serve local Perl documentation
+Pod::Webserver -- Minimal web server for local Perl documentation
 
 =head1 SYNOPSIS
 
   % podwebserver
-  You can now point your browser at http://localhost:8020/
+  ...
+  You can now open your browser to http://localhost:8020/
 
 =head1 DESCRIPTION
 
@@ -568,10 +616,23 @@ This module can be run as an application that works as a
 minimal web server to serve local Perl documentation.  It's like
 L<perldoc> except it works through your browser.
 
-Run F<podwebserver -h> for a list of runtime options.
+C<podwebserver -h> displays help:
 
+	Pod::Webserver version 3.06
+	 Running under perl version 5.018002 for linux
+	Usage:
+	  podwebserver                   = Start podwebserver on localhost:8020. Search @INC
+	  podwebserver -p 1234           = Start podwebserver on localhost:1234
+	  podwebserver -p 1234 -H blorp  = Start podwebserver on blorp:1234
+	  podwebserver -t 3600           = Auto-exit in 1 hour. Default => 18000 (5 hours). 0 => No timeout
+	  podwebserver -d /path/to/lib   = Ignore @INC, and only search within /path/to/lib
+	  podwebserver -e /path/to/skip  = Exclude /path/to/skip files
+	  podwebserver -q                = Quick startup (but no Table of Contents)
+	  podwebserver -v                = Run with verbose output to STDOUT
+	  podwebserver -h                = See this message
+	  podwebserver -V                = Show version information
 
-
+	Run 'perldoc Pod::Webserver' for more information.
 
 =head1 SECURITY (AND @INC)
 
@@ -581,7 +642,7 @@ versions of anything you could get by typing "perldoc
 SomeModuleName".  Pod::Webserver won't serve files at
 arbitrary paths or anything.
 
-But do consider whether you're revealing anything by 
+But do consider whether you're revealing anything by
 basically showing off what versions of modules you've got
 installed; and also consider whether you could be revealing
 any proprietary or in-house module documentation.
@@ -604,7 +665,7 @@ directories you want in @INC, like so:
 
   perl -T -Isomepath -Imaybesomeotherpath -S podwebserver
 
-You can also use the -I trick (that's a capital "igh", 
+You can also use the -I trick (that's a capital "igh",
 not a lowercase "ell") to add dirs to @INC even
 if you're not using -T.  For example:
 
@@ -643,8 +704,6 @@ Note that even when "." isn't indexed, the Pod in files under it are
 still accessible -- just as if you'd typed "perldoc whatever" and got
 the Pod in F<./whatever.pl>
 
-
-
 =head1 SEE ALSO
 
 This module is implemented using many CPAN modules,
@@ -652,7 +711,6 @@ including: L<Pod::Simple::HTMLBatch> L<Pod::Simple::HTML>
 L<Pod::Simple::Search> L<Pod::Simple>
 
 See also L<Pod::Perldoc> and L<http://search.cpan.org/>
-
 
 =head1 COPYRIGHT AND DISCLAIMERS
 
@@ -667,9 +725,9 @@ merchantability or fitness for a particular purpose.
 
 =head1 AUTHOR
 
-Original author: Sean M. Burke C<sburke@cpan.org>
+Original author: Sean M. Burke C<sburke@cpan.org>.
 
-Maintained by: Allison Randal C<allison@perl.org>
+Maintained by: Allison Randal C<allison@perl.org> and Ron Savage C<ron@savage.net.au>.
 
 =cut
 
